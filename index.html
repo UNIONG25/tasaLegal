@@ -8,10 +8,6 @@
     <title>Lider Market | Panel de Tasas</title>
 
     <style>
-        /* 
-            Variables en la raíz para que cambiar el tema sea cuestión 
-            de tocar cuatro valores, no cazar hex por todo el CSS.
-        */
         :root {
             --color-bg: #f5f7fb;
             --color-surface: #ffffff;
@@ -42,12 +38,10 @@
             background: var(--color-bg);
             color: var(--color-text);
             min-height: 100vh;
-            /* clamp evita tener que escribir tres media queries para el padding */
             padding: clamp(1rem, 3vw, 2.5rem);
             line-height: 1.5;
         }
 
-        /* Foco visible para quienes navegan con teclado */
         :focus-visible {
             outline: 2px solid var(--color-primary);
             outline-offset: 2px;
@@ -124,7 +118,6 @@
             color: var(--color-text-muted);
         }
 
-        /* Estados de la tarjeta: carga, error, éxito */
         .rate-card[data-state="loading"] .rate-card__value { color: var(--color-text-muted); }
         .rate-card[data-state="error"] { border-color: var(--color-danger); }
         .rate-card[data-state="error"] .rate-card__value { color: var(--color-danger); }
@@ -163,7 +156,6 @@
             margin-top: 0.25rem;
         }
 
-        /* Spinner simple sin dependencias */
         .spinner {
             display: inline-block;
             width: 14px;
@@ -176,14 +168,6 @@
             margin-right: 0.25rem;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
-
-        .sr-only {
-            position: absolute;
-            width: 1px; height: 1px;
-            padding: 0; margin: -1px;
-            overflow: hidden; clip: rect(0,0,0,0);
-            border: 0;
-        }
     </style>
 </head>
 <body>
@@ -206,7 +190,6 @@
     <main>
         <h1>Control de Tasas</h1>
 
-        <!-- aria-live hace que los lectores anuncien los cambios de tasa -->
         <section class="rates-grid" aria-label="Tasas de cambio actuales">
             <article class="rate-card" data-rate="usd_bcv" data-state="loading">
                 <div class="rate-card__label">USD BCV</div>
@@ -235,31 +218,22 @@
     </main>
 
     <script>
-        /**
-         * Configuración centralizada. Si mañana cambia la API o el intervalo,
-         * se toca aquí y no hay que buscar por todo el archivo.
-         */
+        // URLs de APIs públicas que funcionan en el navegador (CORS habilitado)
         const CONFIG = {
             endpoints: {
-                usd_bcv:  'api/rates/usd-bcv',
-                eur_bcv:  'api/rates/eur-bcv',
-                usdt_p2p: 'api/rates/usdt-p2p'
+                usd_bcv:  'https://ve.dolarapi.com/v1/dolares/oficial',
+                eur_bcv:  'https://ve.dolarapi.com/v1/euros/oficial',
+                usdt_p2p: 'https://pitbullchain.com/api/rates'
             },
-            refreshIntervalMs: 60_000, // 1 minuto
+            refreshIntervalMs: 60_000,
             maxRetries: 3
         };
 
         const state = {
             scheduledMode: false,
-            refreshTimer: null,
-            lastUpdate: null
+            refreshTimer: null
         };
 
-        /**
-         * Formatea un número como moneda en locale venezolano.
-         * Devuelve "—" si el valor no es un número válido, para evitar
-         * mostrar "NaN" o "undefined" al usuario.
-         */
         function formatRate(value) {
             const num = Number(value);
             if (!Number.isFinite(num)) return '—';
@@ -276,10 +250,6 @@
             });
         }
 
-        /**
-         * Actualiza una tarjeta específica. Acepta un contador de reintentos
-         * para no quedarnos pegados si la API no responde.
-         */
         async function fetchRate(rateKey, retries = 0) {
             const card = document.querySelector(`[data-rate="${rateKey}"]`);
             if (!card) return;
@@ -297,20 +267,39 @@
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
                 const data = await res.json();
-                // Asumimos que la API devuelve { rate: number, updatedAt: string }
-                valueEl.textContent = formatRate(data.rate);
-                statusEl.textContent = `Actualizado ${formatTimestamp(new Date())}`;
+                let rate = null;
+                let source = '';
+
+                // DolarApi devuelve un objeto directo con la propiedad "promedio"
+                if (rateKey === 'usd_bcv' || rateKey === 'eur_bcv') {
+                    rate = data.promedio;
+                    source = 'BCV';
+                } 
+                // PitbullChain devuelve un objeto anidado con un array de tasas
+                else if (rateKey === 'usdt_p2p') {
+                    const usdtData = data.data.rates.find(r => r.code === 'USDT_VES');
+                    if (!usdtData) throw new Error('Estructura de datos inesperada');
+                    rate = usdtData.rate;
+                    source = 'P2P';
+                }
+
+                if (rate === null || isNaN(rate)) throw new Error('Dato numérico inválido');
+
+                valueEl.textContent = formatRate(rate);
+                statusEl.textContent = `Actualizado: ${formatTimestamp(new Date())} (${source})`;
                 card.dataset.state = 'success';
+
             } catch (err) {
-                console.warn(`Error cargando ${rateKey}:`, err.message);
+                console.warn(`Fallo en ${rateKey}:`, err.message);
+                
                 if (retries < CONFIG.maxRetries) {
-                    // Reintento con backoff simple
+                    // Backoff exponencial simple: 2s, 4s, 8s
                     setTimeout(() => fetchRate(rateKey, retries + 1), 2000 * (retries + 1));
                     statusEl.textContent = `Reintentando (${retries + 1}/${CONFIG.maxRetries})...`;
                 } else {
                     card.dataset.state = 'error';
                     valueEl.textContent = 'Error';
-                    statusEl.innerHTML = 'No se pudo cargar. <button class="retry-btn" type="button">Reintentar</button>';
+                    statusEl.innerHTML = 'Sin conexión. <button class="retry-btn" type="button">Reintentar</button>';
                     statusEl.querySelector('.retry-btn')
                             .addEventListener('click', () => fetchRate(rateKey, 0));
                 }
@@ -319,13 +308,8 @@
 
         function fetchAllRates() {
             Object.keys(CONFIG.endpoints).forEach(key => fetchRate(key));
-            state.lastUpdate = new Date();
         }
 
-        /**
-         * El modo programado activa un refresco periódico.
-         * Si se desactiva, limpiamos el timer para no dejar procesos colgados.
-         */
         function toggleScheduledMode() {
             state.scheduledMode = !state.scheduledMode;
             const btn = document.getElementById('scheduledModeBtn');
@@ -340,13 +324,12 @@
             }
         }
 
-        // Inicialización
         document.addEventListener('DOMContentLoaded', () => {
             fetchAllRates();
             document.getElementById('scheduledModeBtn')
                     .addEventListener('click', toggleScheduledMode);
 
-            // Refrescar cuando la pestaña vuelve a estar visible
+            // Refrescar al volver a la pestaña para evitar datos obsoletos
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden && state.scheduledMode) fetchAllRates();
             });
